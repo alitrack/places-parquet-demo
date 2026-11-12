@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>places-parquet PoC — 行组剪枝 + dryrun 信任层</title>
+<style>
+  :root { --ink:#1a2333; --sub:#5b6b85; --line:#e3e8f0; --bg:#f7f9fc; --card:#ffffff; --acc:#2563eb; --ok:#059669; }
+  * { box-sizing:border-box; margin:0; }
+  body { font-family:"Segoe UI",system-ui,-apple-system,sans-serif; background:var(--bg); color:var(--ink); padding:28px; }
+  .wrap { max-width:980px; margin:0 auto; }
+  h1 { font-size:22px; font-weight:650; }
+  .sub { color:var(--sub); font-size:13px; margin-top:4px; }
+  .search { display:flex; gap:8px; margin:18px 0 14px; }
+  .search input { flex:1; padding:11px 14px; font-size:15px; border:1px solid var(--line); border-radius:8px; outline:none; }
+  .search input:focus { border-color:var(--acc); }
+  .search button { padding:11px 20px; background:var(--acc); color:#fff; border:0; border-radius:8px; font-size:14px; cursor:pointer; }
+  .panel { display:grid; grid-template-columns:1fr 340px; gap:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+  .card h3 { font-size:13px; color:var(--sub); font-weight:600; text-transform:uppercase; letter-spacing:.4px; margin-bottom:10px; }
+  table { width:100%; border-collapse:collapse; font-size:13.5px; }
+  th { text-align:left; color:var(--sub); font-weight:600; padding:6px 8px; border-bottom:1px solid var(--line); }
+  td { padding:6px 8px; border-bottom:1px solid #f0f3f8; }
+  .num { text-align:right; font-variant-numeric:tabular-nums; }
+  .est { display:flex; flex-direction:column; gap:10px; }
+  .est .row { display:flex; justify-content:space-between; font-size:13.5px; }
+  .est .row b { font-variant-numeric:tabular-nums; }
+  .bar { height:8px; background:#edf1f7; border-radius:4px; overflow:hidden; }
+  .bar i { display:block; height:100%; background:var(--ok); }
+  .ok { color:var(--ok); font-weight:650; }
+  .status { margin-top:10px; font-size:12.5px; color:var(--sub); }
+  #engineStatus { padding:40px; text-align:center; color:var(--sub); font-size:14px; }
+  .hint { font-size:12px; color:var(--sub); margin-top:8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>places-parquet PoC</h1>
+  <div class="sub">237,004 GeoNames cities500 · nkey 排序 + 行组统计剪枝 · DuckDB-WASM 本地引擎 · dryrun 式事前估算（信任层）</div>
+
+  <div id="engineStatus">loading query engine (duckdb-mvp.wasm ~9.5 MB, local vendor)…</div>
+
+  <div id="app" style="display:none">
+    <div class="search">
+      <input id="q" placeholder="前缀搜索… try 'san diego', 'london', 'santa', '新德里' n/a — 英文前缀" autofocus>
+      <button onclick="run()">Search</button>
+    </div>
+    <div class="panel">
+      <div class="card">
+        <h3>Results — top 25 by population</h3>
+        <table>
+          <thead><tr><th>#</th><th>Name</th><th>Admin1</th><th>Country</th><th class="num">Population</th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+        <div class="hint">SELECT name, admin1, country, population FROM places WHERE nkey &gt;= 'p' AND nkey &lt; 'p\uffff' ORDER BY population DESC LIMIT 25</div>
+      </div>
+      <div class="card est">
+        <h3>dryrun-style estimate（事前，不执行主查询）</h3>
+        <div class="row"><span>estimated row groups</span><b id="eRg">–</b></div>
+        <div class="row"><span>total row groups</span><b id="eTot">–</b></div>
+        <div class="row"><span>estimated bytes（必需列×命中行组）</span><b id="eBytes">–</b></div>
+        <div class="row"><span>full-scan bytes（同列集）</span><b id="eFull">–</b></div>
+        <div class="bar"><i id="eBar" style="width:0%"></i></div>
+        <div class="row"><span>触碰占比</span><b class="ok" id="ePct">–</b></div>
+        <div class="row"><span>confidence</span><b id="eConf">–</b></div>
+        <h3 style="margin-top:6px">actual（执行后）</h3>
+        <div class="row"><span>result rows</span><b id="aRows">–</b></div>
+        <div class="row"><span>query time (warm)</span><b id="aTime">–</b></div>
+        <div class="row"><span>engine cold→ready</span><b id="aBoot">–</b></div>
+        <h3 style="margin-top:6px">tantivy_stats（native 索引，同词估算）</h3>
+        <div class="row"><span>terms</span><b id="tvTerms" style="font-size:12px">–</b></div>
+        <div class="row"><span>segments</span><b id="tvSeg">–</b></div>
+        <div class="row"><span>estimated postings bytes</span><b id="tvBytes">–</b></div>
+        <div class="row"><span>/ total index bytes</span><b id="tvTotal">–</b></div>
+        <div class="row"><span>max candidates</span><b id="tvCand">–</b></div>
+        <div class="row"><span>confidence</span><b id="tvConf">–</b></div>
+        <div class="row"><span style="font-size:11.5px">notes</span><b id="tvNotes" style="font-size:11px;max-width:190px;text-align:right;font-weight:400;color:var(--sub)">–</b></div>
+      </div>
+    </div>
+    <div class="status" id="status"></div>
+  </div>
+</div>
+
+<script type="module">
+import * as duckdb from 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0/+esm';
+
+const FULL_COLS = ['nkey','name','admin1','country','lat','lon','population'];
+const t0 = performance.now();
+const statusEl = document.getElementById('engineStatus');
+
+const bundle = duckdb.getJsDelivrBundle ? duckdb.getJsDelivrBundle('mvp') : {wasm: ''};
+// point wasm to local vendor (mvp core, local file — no CDN dependency for the engine)
+bundle.wasm = new URL('./vendor/duckdb-mvp.wasm', location.href).href;
+
+const worker = await duckdb.createWorker(new URL('./vendor/duckdb-browser-mvp.worker.js', location.href).href);
+statusEl.textContent = 'instantiating engine…';
+const db = new duckdb.AsyncDuckDB(new duckdb.ConsoleLogger(), worker);
+await db.instantiate(bundle.wasm);
+const bootMs = Math.round(performance.now() - t0);
+
+statusEl.textContent = 'loading places.parquet (9.8 MB, local)…';
+const buf = await (await fetch('./places.parquet')).arrayBuffer();
+await db.registerFileBuffer('places.parquet', new Uint8Array(buf));
+
+const conn = await db.connect();
+// warm the metadata cache: one parquet_metadata pass
+await conn.query(`SELECT count(*) FROM parquet_metadata('places.parquet')`);
+
+statusEl.style.display = 'none';
+document.getElementById('app').style.display = '';
+document.getElementById('aBoot').textContent = (bootMs/1000).toFixed(1) + ' s';
+document.getElementById('eTot').textContent = await totalRgs();
+
+async function totalRgs() {
+  const r = await conn.query(`SELECT num_row_groups FROM parquet_file_metadata('places.parquet')`);
+  return r.getChildAt(0).get(0);
+}
+
+let metaCache = null;
+async function getMeta() {
+  if (metaCache) return metaCache;
+  const t = await conn.query(`
+    SELECT row_group_id, path_in_schema, total_compressed_size, stats_min_value, stats_max_value
+    FROM parquet_metadata('places.parquet')`);
+  const rgs = {};
+  const rgCol = t.getChildAt(0), colCol = t.getChildAt(1),
+        szCol = t.getChildAt(2), mnCol = t.getChildAt(3), mxCol = t.getChildAt(4);
+  for (let i = 0; i < t.numRows; i++) {
+    const rg = rgCol.get(i), col = colCol.get(i);
+    const g = rgs[rg] ?? (rgs[rg] = {bytes:{}, min:{}, max:{}});
+    g.bytes[col] = Number(szCol.get(i));
+    g.min[col] = mnCol.get(i); g.max[col] = mxCol.get(i);
+  }
+  metaCache = rgs;
+  return rgs;
+}
+
+function estimate(rgs, prefix) {
+  const lo = prefix, hi = prefix + '\uffff';
+  let hit = 0, bytes = 0, full = 0, total = 0;
+  for (const g of Object.values(rgs)) {
+    total++;
+    const sum = FULL_COLS.reduce((a,c)=>a+(g.bytes[c]||0),0);
+    full += sum;
+    const mn = g.min['nkey'], mx = g.max['nkey'];
+    const kept = (mn==null||mx==null) ? true : !(String(mx) < lo || String(mn) > hi);
+    if (kept) { hit++; bytes += sum; }
+  }
+  return {hit, bytes, full, total, pct: 100*bytes/full};
+}
+
+window.run = async function() {
+  const prefix = document.getElementById('q').value.trim().toLowerCase();
+  if (!prefix) return;
+  const st = document.getElementById('status');
+  st.textContent = 'estimating…';
+  const rgs = await getMeta();
+  const est = estimate(rgs, prefix);
+  document.getElementById('eRg').textContent = est.hit;
+  document.getElementById('eBytes').textContent = (est.bytes/1024).toFixed(0) + ' KB';
+  document.getElementById('eFull').textContent = (est.full/1024/1024).toFixed(2) + ' MB';
+  document.getElementById('ePct').textContent = est.pct.toFixed(2) + ' %';
+  document.getElementById('eBar').style.width = Math.min(100, est.pct*6) + '%';
+  document.getElementById('eConf').textContent = est.hit <= 3 ? 'high' : 'medium';
+
+  const hi = prefix + '\uffff';
+  const sql = `SELECT name, coalesce(admin1,''), coalesce(country,''), population
+               FROM read_parquet('places.parquet')
+               WHERE nkey >= '${prefix}' AND nkey < '${hi}'
+               ORDER BY population DESC NULLS LAST LIMIT 25`;
+  // warm run (second execution after cold first)
+  await conn.query(sql);
+  let t1 = performance.now();
+  const res = await conn.query(sql);
+  const ms = (performance.now() - t1);
+
+  const tb = document.getElementById('rows');
+  tb.innerHTML = '';
+  const c0=res.getChildAt(0),c1=res.getChildAt(1),c2=res.getChildAt(2),c3=res.getChildAt(3);
+  for (let i=0;i<res.numRows;i++){
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${i+1}</td><td>${c0.get(i)}</td><td>${c1.get(i)}</td><td>${c2.get(i)}</td><td class="num">${Number(c3.get(i)).toLocaleString()}</td>`;
+    tb.appendChild(tr);
+  }
+  document.getElementById('aRows').textContent = res.numRows;
+  document.getElementById('aTime').textContent = ms.toFixed(1) + ' ms';
+  st.textContent = `done: prefix='${prefix}' → ${est.hit}/${est.total} row groups, est ${(est.bytes/1024).toFixed(0)} KB of ${(est.full/1024/1024).toFixed(1)} MB`;
+
+  // third trust panel: tantivy_stats via native sidecar (best-effort).
+  // Same host as the page (works via 127.0.0.1, LAN IP or tailscale 100.x).
+  fetch(`http://${location.hostname}:8792/tantivy_stats?q=${encodeURIComponent(prefix)}`)
+    .then(r => r.ok ? r.json() : Promise.reject(r.status))
+    .then(t => {
+      document.getElementById('tvTerms').textContent = (t.query_terms||[]).join(', ');
+      document.getElementById('tvSeg').textContent = t.segments;
+      document.getElementById('tvBytes').textContent = Number(t.estimated_postings_bytes).toLocaleString() + ' B';
+      document.getElementById('tvTotal').textContent = (t.total_index_bytes/1024/1024).toFixed(1) + ' MB';
+      document.getElementById('tvCand').textContent = Number(t.estimated_max_candidates).toLocaleString();
+      document.getElementById('tvConf').textContent = t.confidence;
+      document.getElementById('tvConf').className = t.confidence === 'high' ? 'ok' : '';
+      document.getElementById('tvNotes').textContent = (t.notes||'').split(';')[0].slice(0,80);
+    })
+    .catch(() => {
+      document.getElementById('tvNotes').textContent = 'sidecar 未启动（python3 tantivy_sidecar.py @8792）';
+    });
+};
+
+document.getElementById('q').addEventListener('keydown', e => { if (e.key==='Enter') run(); });
+document.getElementById('q').value = 'san diego';
+run();
+</script>
+</body>
+</html>

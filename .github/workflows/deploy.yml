@@ -1,0 +1,47 @@
+name: Deploy demo to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # GitHub caps repos at 100MB per file and 1GB total; wasm blobs (39MB) are
+      # fetched at deploy time from the npm registry tarball instead of living in
+      # git history. (jsDelivr single-file serving truncated these; the npm
+      # tarball serves the package whole.)
+      - name: Fetch duckdb-wasm vendor assets
+        run: |
+          mkdir -p web/vendor
+          curl -fsSL https://registry.npmjs.org/@duckdb/duckdb-wasm/-/duckdb-wasm-1.32.0.tgz -o /tmp/duckdb-wasm.tgz
+          tar -xzf /tmp/duckdb-wasm.tgz -C /tmp
+          cp package/dist/duckdb-mvp.wasm web/vendor/
+          cp package/dist/duckdb-browser-mvp.worker.js web/vendor/
+          test $(stat -c%s web/vendor/duckdb-mvp.wasm) -eq 39362651
+          stat -c '%n %s' web/vendor/*
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

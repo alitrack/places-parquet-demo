@@ -1,0 +1,3 @@
+web/vendor/*.wasm
+web/vendor/*.js
+web/places.parquet
