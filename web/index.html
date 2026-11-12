@@ -31,12 +31,29 @@
   .status { margin-top:10px; font-size:12.5px; color:var(--sub); }
   #engineStatus { padding:40px; text-align:center; color:var(--sub); font-size:14px; }
   .hint { font-size:12px; color:var(--sub); margin-top:8px; }
+  .about { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; margin-top:14px; font-size:13.5px; line-height:1.75; color:#37455e; }
+  .about p { margin:0 0 6px; }
+  .about p:last-child { margin:0; }
+  .about a { color:var(--acc); text-decoration:none; border-bottom:1px dotted var(--acc); }
+  .about code { background:#eef2f8; border-radius:4px; padding:1px 5px; font-size:12.5px; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>places-parquet PoC</h1>
   <div class="sub">237,004 GeoNames cities500 · nkey 排序 + 行组统计剪枝 · DuckDB-WASM 本地引擎 · dryrun 式事前估算（信任层）</div>
+  <div class="about">
+    <p><b>这是什么</b> — 浏览器里的前缀地名搜索：数据按 <code>nkey</code>（归一化前缀键）排序、<code>ROW_GROUP_SIZE=1024</code> 分组，一个前缀查询只落在连续少数行组上——<b>布局本身就是索引</b>，无需任何后端服务。搜索前先给你「报价」（会碰多少行组/字节），搜索后如实对账；第三面板展示同一查询词在 native tantivy 索引上的事前估算。</p>
+    <p><b>出处链</b> —
+      <a href="https://github.com/aleda145/duckdb-dryrun" target="_blank">duckdb-dryrun</a>（bind 期 parse-only 成本估算的源头）→
+      <a href="https://malcolmmeyer.com/posts/places-as-parquet%3A-a-prefix-and-free-text-search-that-runs-in-the-browser/" target="_blank">Places as Parquet 博文</a>（Malcolm Meyer，布局即产品的原作）·
+      <a href="https://malcolmmeyer.com/webapps/places-parquet/" target="_blank">原版 webapp</a> →
+      本 PoC（DuckDB-WASM 复刻 + 信任层面板）·
+      <a href="https://github.com/alitrack/duckdb-tantivy" target="_blank">duckdb-tantivy</a>（第三面板的 tantivy_stats 函数所在扩展）·
+      <a href="https://github.com/duckdb/community-extensions/pull/3593" target="_blank">社区扩展 PR #3593</a> ·
+      <a href="https://github.com/alitrack/places-parquet-demo" target="_blank">本页源码</a>
+    </p>
+  </div>
 
   <div id="engineStatus">loading query engine (duckdb-mvp.wasm ~9.5 MB, local vendor)…</div>
 
